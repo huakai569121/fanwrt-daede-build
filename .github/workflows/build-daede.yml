@@ -1,0 +1,116 @@
+# ============================================================
+# FanWrt x86/64 固件编译（开启 BTF + daed 内核依赖）
+#
+# 用法：
+#   1. GitHub 新建一个【空】仓库（建议 Public，Public 仓库 Actions 免费用时不计费）
+#   2. 在仓库里创建 .github/workflows/build-daede.yml，把本文件内容粘进去
+#   3. Actions 页面 → 左侧选 "Build FanWrt x86/64 (BTF + daede)" → Run workflow
+#   4. 等 40~90 分钟，跑完后在 Artifacts 里下载 fanchmwrt-x86-64-btf
+#
+# 说明：不需要 fork FanWrt，本 workflow 直接 checkout 官方仓库源码
+# ============================================================
+
+name: Build FanWrt x86/64 (BTF + daede)
+
+on:
+  workflow_dispatch:          # 手动触发（推荐）
+  push:
+    paths:
+      - '.github/workflows/build-daede.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360      # 免费账户单 job 上限 6 小时
+
+    steps:
+      - name: Checkout FanWrt source
+        uses: actions/checkout@v4
+        with:
+          repository: fanchmwrt/fanchmwrt
+          ref: fanchmwrt-25.12.4
+          fetch-depth: 1
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential clang flex bison g++ gawk gcc-multilib g++-multilib \
+            gettext git libncurses-dev libssl-dev python3-setuptools rsync swig \
+            unzip zlib1g-dev file wget bc cpio libelf-dev dwarves
+          # dwarves 提供 pahole；开 CONFIG_DEBUG_INFO_BTF 必需，缺了内核必编译失败
+          command -v pahole && pahole --version
+
+      - name: Update and install feeds
+        run: |
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Enable kernel BTF (dae CO-RE eBPF 必需)
+        run: |
+          # x86/64 是子目标，这里只做增量覆盖
+          cat >> target/linux/x86/64/config-6.12 <<'EOF'
+
+          # --- daed(dae) CO-RE eBPF 支持 ---
+          CONFIG_DEBUG_INFO=y
+          CONFIG_DEBUG_INFO_DWARF5=y
+          CONFIG_DEBUG_INFO_BTF=y
+          CONFIG_DEBUG_INFO_BTF_MODULES=y
+          CONFIG_XDP_SOCKETS=y
+          EOF
+
+      - name: Generate .config
+        run: |
+          cat > .config <<'EOF'
+          CONFIG_TARGET_x86=y
+          CONFIG_TARGET_x86_64=y
+          CONFIG_TARGET_x86_64_DEVICE_generic=y
+
+          # daed/dae 需要的内核模块（源码有定义，默认未选中）
+          CONFIG_PACKAGE_kmod-sched-core=y
+          CONFIG_PACKAGE_kmod-sched-bpf=y
+          CONFIG_PACKAGE_kmod-veth=y
+          CONFIG_PACKAGE_kmod-xdp-sockets-diag=y
+          CONFIG_PACKAGE_kmod-nft-tproxy=y
+          CONFIG_PACKAGE_ca-bundle=y
+          EOF
+          make defconfig
+
+      - name: Verify critical options
+        run: |
+          echo "=== 关键配置校验（必须都有 =y）==="
+          for k in CONFIG_DEBUG_INFO_BTF CONFIG_TARGET_x86_64 \
+                   CONFIG_PACKAGE_kmod-sched-bpf CONFIG_PACKAGE_kmod-veth \
+                   CONFIG_PACKAGE_kmod-xdp-sockets-diag CONFIG_PACKAGE_kmod-nft-tproxy; do
+            printf '%-42s %s\n' "$k" "$(grep -m1 "^${k}=" .config || echo '!!! 未选中')"
+          done
+
+      - name: Download sources
+        run: make -j$(nproc) download
+
+      - name: Build
+        run: make -j$(nproc) BUILD_LOG=1
+
+      - name: Upload firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: fanchmwrt-x86-64-btf
+          path: bin/targets/x86/64/*.img.gz
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload .config (便于复现)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-config
+          path: .config
+          retention-days: 30
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: logs/
+          retention-days: 7
