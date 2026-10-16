@@ -90,23 +90,22 @@ jobs:
             printf '%-42s %s\n' "$k" "$(grep -m1 "^${k}=" .config || echo '!!! 未选中')"
           done
 
-      - name: Verify kernel BTF config (fail fast)
+      - name: Verify BTF options in .config (fail fast)
         run: |
           df -h / | tail -1
-          echo "=== 生成内核配置并检查 BTF ==="
-          make target/linux/prepare V=s 2>&1 | tail -12 || true
-          KC=$(find build_dir -path "*linux-x86_64*" -name ".config" 2>/dev/null | head -1)
-          echo "kernel config: ${KC:-NOT FOUND}"
-          if [ -z "$KC" ]; then
-            echo "!! 找不到内核配置文件"; exit 1
-          fi
-          echo "--- DEBUG_INFO / BTF 相关 ---"
-          grep -E "^CONFIG_DEBUG_INFO" "$KC" || echo "NO DEBUG_INFO entries"
-          if ! grep -q "^CONFIG_DEBUG_INFO_BTF=y" "$KC"; then
-            echo "!! 内核配置里没有 BTF —— 终止编译，避免白等一小时"
+          echo "=== 顶层 .config 中 KERNEL_DEBUG 相关 ==="
+          grep -E "^CONFIG_KERNEL_DEBUG" .config || echo "NONE"
+          echo "--- 顶层 .config 中 kmod 相关 ---"
+          grep -E "^CONFIG_PACKAGE_kmod-(sched-bpf|veth|nft-tproxy|xdp-sockets-diag)=" .config || echo "NONE"
+          if ! grep -q "^CONFIG_KERNEL_DEBUG_INFO_BTF=y" .config; then
+            echo "!! 未启用 CONFIG_KERNEL_DEBUG_INFO_BTF —— 终止，避免白等"
             exit 1
           fi
-          echo "== BTF 已启用，继续编译 =="
+          if grep -q "^CONFIG_KERNEL_DEBUG_INFO_REDUCED=y" .config; then
+            echo "!! KERNEL_DEBUG_INFO_REDUCED 仍为 y，会否决 BTF —— 终止"
+            exit 1
+          fi
+          echo "== BTF 选项 OK，继续编译 =="
 
       - name: Download sources
         run: make -j$(nproc) download
