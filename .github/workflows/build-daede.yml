@@ -46,16 +46,14 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      - name: Enable kernel BTF (dae CO-RE eBPF 必需)
+      - name: Kernel extra config (XDP sockets)
         run: |
-          # x86/64 是子目标，这里只做增量覆盖
+          # 注意：BTF 必须用顶层 .config 的 CONFIG_KERNEL_DEBUG_INFO_BTF 打开，
+          # 手写进 target/linux/.../config-6.12 会被 Kconfig 因依赖不满足丢掉。
+          # 这里只补 kmod-xdp-sockets-diag 需要的 XDP sockets 符号。
           cat >> target/linux/x86/64/config-6.12 <<'EOF'
 
-          # --- daed(dae) CO-RE eBPF 支持 ---
-          CONFIG_DEBUG_INFO=y
-          CONFIG_DEBUG_INFO_DWARF5=y
-          CONFIG_DEBUG_INFO_BTF=y
-          CONFIG_DEBUG_INFO_BTF_MODULES=y
+          # --- daed 依赖：XDP sockets ---
           CONFIG_XDP_SOCKETS=y
           EOF
 
@@ -65,6 +63,13 @@ jobs:
           CONFIG_TARGET_x86=y
           CONFIG_TARGET_x86_64=y
           CONFIG_TARGET_x86_64_DEVICE_generic=y
+
+          # ---- BTF（dae CO-RE eBPF 必需）----
+          # 关键：KERNEL_DEBUG_INFO_REDUCED 默认是 y，而 BTF depends on !REDUCED，
+          # 不显式关掉它，BTF 会被静默丢弃（这就是第一次编译没 BTF 的原因）
+          CONFIG_KERNEL_DEBUG_INFO=y
+          # CONFIG_KERNEL_DEBUG_INFO_REDUCED is not set
+          CONFIG_KERNEL_DEBUG_INFO_BTF=y
 
           # daed/dae 需要的内核模块（源码有定义，默认未选中）
           CONFIG_PACKAGE_kmod-sched-core=y
@@ -84,6 +89,24 @@ jobs:
                    CONFIG_PACKAGE_kmod-xdp-sockets-diag CONFIG_PACKAGE_kmod-nft-tproxy; do
             printf '%-42s %s\n' "$k" "$(grep -m1 "^${k}=" .config || echo '!!! 未选中')"
           done
+
+      - name: Verify kernel BTF config (fail fast)
+        run: |
+          df -h / | tail -1
+          echo "=== 生成内核配置并检查 BTF ==="
+          make target/linux/prepare V=s 2>&1 | tail -12 || true
+          KC=$(find build_dir -path "*linux-x86_64*" -name ".config" 2>/dev/null | head -1)
+          echo "kernel config: ${KC:-NOT FOUND}"
+          if [ -z "$KC" ]; then
+            echo "!! 找不到内核配置文件"; exit 1
+          fi
+          echo "--- DEBUG_INFO / BTF 相关 ---"
+          grep -E "^CONFIG_DEBUG_INFO" "$KC" || echo "NO DEBUG_INFO entries"
+          if ! grep -q "^CONFIG_DEBUG_INFO_BTF=y" "$KC"; then
+            echo "!! 内核配置里没有 BTF —— 终止编译，避免白等一小时"
+            exit 1
+          fi
+          echo "== BTF 已启用，继续编译 =="
 
       - name: Download sources
         run: make -j$(nproc) download
