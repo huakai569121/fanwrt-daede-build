@@ -57,6 +57,18 @@ jobs:
           CONFIG_XDP_SOCKETS=y
           EOF
 
+      - name: Fetch official package list
+        run: |
+          # checkout 拉的是 FanWrt 源码（会清空工作目录），
+          # 所以包清单要从自己仓库的 raw 地址单独下载
+          for i in 1 2 3; do
+            curl -sSL --max-time 60 -o packages-official.txt \
+              https://raw.githubusercontent.com/huakai569121/fanwrt-daede-build/main/packages-official.txt && break
+            echo "retry $i ..."; sleep 5
+          done
+          echo "packages lines: $(wc -l < packages-official.txt)"
+          head -3 packages-official.txt
+
       - name: Generate .config
         run: |
           cat > .config <<'EOF'
