@@ -76,6 +76,11 @@ jobs:
           CONFIG_TARGET_x86_64=y
           CONFIG_TARGET_x86_64_DEVICE_generic=y
 
+          # ---- rootfs 分区大小（MB）----
+          # 519 个包全量编进固件，默认 104MB 的 ext4 rootfs 会 "out of space" 失败。
+          # 调大到 1024MB，给安装内容留足余量（squashfs 镜像本体仅约 34MB，压缩后很小）。
+          CONFIG_TARGET_ROOTFS_PARTSIZE=1024
+
           # ---- BTF（dae CO-RE eBPF 必需）----
           # 关键：KERNEL_DEBUG_INFO_REDUCED 默认是 y，而 BTF depends on !REDUCED，
           # 不显式关掉它，BTF 会被静默丢弃（这就是第一次编译没 BTF 的原因）
@@ -101,7 +106,7 @@ jobs:
       - name: Verify critical options
         run: |
           echo "=== 关键配置校验（必须都有 =y）==="
-          for k in CONFIG_DEBUG_INFO_BTF CONFIG_TARGET_x86_64 \
+          for k in CONFIG_DEBUG_INFO_BTF CONFIG_TARGET_x86_64 CONFIG_TARGET_ROOTFS_PARTSIZE \
                    CONFIG_PACKAGE_kmod-sched-bpf CONFIG_PACKAGE_kmod-veth \
                    CONFIG_PACKAGE_kmod-xdp-sockets-diag CONFIG_PACKAGE_kmod-nft-tproxy; do
             printf '%-42s %s\n' "$k" "$(grep -m1 "^${k}=" .config || echo '!!! 未选中')"
