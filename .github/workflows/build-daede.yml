@@ -71,7 +71,7 @@ jobs:
           # CONFIG_KERNEL_DEBUG_INFO_REDUCED is not set
           CONFIG_KERNEL_DEBUG_INFO_BTF=y
 
-          # daed/dae 需要的内核模块（源码有定义，默认未选中）
+          # daed/dae 需要的内核模块（官方底包里没有，需显式补上）
           CONFIG_PACKAGE_kmod-sched-core=y
           CONFIG_PACKAGE_kmod-sched-bpf=y
           CONFIG_PACKAGE_kmod-veth=y
@@ -79,6 +79,11 @@ jobs:
           CONFIG_PACKAGE_kmod-nft-tproxy=y
           CONFIG_PACKAGE_ca-bundle=y
           EOF
+
+          # 追加官方 25.12.4-1.0.4 底包的完整包集合
+          # （含 fwxd / kmod-fwx / luci-app-fwx-* / luci-theme-fanchmwrt 等自有功能）
+          cat packages-official.txt >> .config
+          wc -l .config
           make defconfig
 
       - name: Verify critical options
