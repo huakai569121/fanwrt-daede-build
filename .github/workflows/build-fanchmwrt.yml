@@ -54,7 +54,7 @@ jobs:
           # dwarves 提供 pahole；开启 CONFIG_KERNEL_DEBUG_INFO_BTF 必需
           command -v pahole && pahole --version
 
-      - name: Add daed feed (QiuSimons: 含 daed 守护进程 + luci-app-daed)
+      - name: Add daed feed (QiuSimons - daed daemon + luci-app-daed)
         run: |
           grep -q "luci-app-daed" feeds.conf.default || cat >> feeds.conf.default <<'EOF'
 
