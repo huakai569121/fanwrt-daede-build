@@ -47,6 +47,39 @@ jobs:
           ref: fanchmwrt-25.12.4
           fetch-depth: 1
 
+      # ============================================================
+      # 编译缓存：把下载过的源码包(dl)与编译出的宿主工具(host tools)
+      # 缓存到 GitHub Actions Cache，下次编译省掉大量下载/重编时间。
+      #   - dl：OpenWrt 从各镜像拉取的上千个源码 tarball（最慢、最该缓存）
+      #   - build_dir/host + staging_dir/host：宿主工具链/编译工具（稳定、跨配置复用）
+      # 免费额度约 10GB/仓库，单条 cache entry ≤10GB；dl+host 合计通常在预算内。
+      # ============================================================
+      - name: Cache OpenWrt downloads (dl)
+        id: cache-dl
+        uses: actions/cache@v4
+        with:
+          path: dl
+          key: owrt-dl-${{ github.sha }}
+          restore-keys: |
+            owrt-dl-
+
+      - name: Cache host tools & host toolchain
+        id: cache-host
+        uses: actions/cache@v4
+        with:
+          path: |
+            build_dir/host
+            build_dir/hostpkg
+            staging_dir/host
+          key: owrt-host-${{ hashFiles('include/toolchain.mk') || github.sha }}
+          restore-keys: |
+            owrt-host-
+
+      - name: Show cache status
+        run: |
+          echo "dl cache hit  : ${{ steps.cache-dl.outputs.cache-hit }}"
+          echo "host cache hit: ${{ steps.cache-host.outputs.cache-hit }}"
+
       - name: Install build dependencies
         run: |
           sudo apt-get update
@@ -90,9 +123,9 @@ jobs:
           CONFIG_TARGET_x86_64=y
           CONFIG_TARGET_x86_64_DEVICE_generic=y
 
-          # ---- 分区大小（MB）。加 || 兜底：push 触发时 inputs 为空，回退到默认 2048 ----
-          CONFIG_TARGET_KERNEL_PARTSIZE=${{ github.event.inputs.kernel_mb || '2048' }}
-          CONFIG_TARGET_ROOTFS_PARTSIZE=${{ github.event.inputs.rootfs_mb || '2048' }}
+          # ---- 分区大小（MB）----
+          CONFIG_TARGET_KERNEL_PARTSIZE=${{ github.event.inputs.kernel_mb }}
+          CONFIG_TARGET_ROOTFS_PARTSIZE=${{ github.event.inputs.rootfs_mb }}
 
           # ---- BTF（dae CO-RE eBPF 必需，后续 opkg 安装 daed 即可运行）----
           # 必须关掉 REDUCED，否则 BTF 被静默丢弃
@@ -189,15 +222,16 @@ jobs:
             echo "未找到 combined-efi 镜像，跳过 data 分区（基础镜像仍会上传）"
             exit 0
           fi
-          # 释放构建目录，给数据分区腾出磁盘
-          rm -rf build_dir staging_dir || true
+          # 释放【目标】构建目录（内核/rootfs 体积最大），给数据分区腾出磁盘；
+          # 只删 target-*，保留 build_dir/host、staging_dir/host 供缓存复用（见上方 Cache 步骤）
+          rm -rf build_dir/target-* staging_dir/target-* || true
           gunzip -kf "$IMG"
           RAW="${IMG%.gz}"
-          # 文件尾部追加 data 分区空间（加 || 兜底，避免 push 触发时为空）
-          truncate -s +${{ github.event.inputs.data_mb || '5120' }}M "$RAW"
+          # 文件尾部追加 data 分区空间
+          truncate -s +${{ github.event.inputs.data_mb }}M "$RAW"
           sfdisk -d "$RAW"
           # 在空闲区域新增第 3 分区（data）
-          echo ", +${{ github.event.inputs.data_mb || '5120' }}M, L" | sfdisk -N 3 "$RAW"
+          echo ", +${{ github.event.inputs.data_mb }}M, L" | sfdisk -N 3 "$RAW"
           LOOP=$(sudo losetup -fP --show "$RAW")
           sleep 2
           sudo mkfs.ext4 -F -L data "${LOOP}p3"
