@@ -1,15 +1,19 @@
 # ============================================================
-# FanchmWrt x86/64 固件编译（25.12.4-1.0.4 基线）
-#   - daed（dae 透明代理）+ 其内核依赖（eBPF/BTF/XDP）全部编译进内核
-#   - appfilter（Open App Filter / kmod-fwx / fwxd）内核依赖全部编译进内核
-#   - FanchmWrt 全部默认插件（luci-app-fwx-*）全选
+# FanchmWrt x86/64 固件编译（25.12.4-1.0.4 基线）——「仅内核」版本
+#   - 只编译【内核】，不把插件（daed / appfilter / fanchmwrt 默认 luci-app）编进固件；
+#     方便刷机后自己 opkg install 任意插件，无需重编内核。
+#   - daed 依赖内核：eBPF/BTF + sched-bpf + veth + nft-tproxy/socket/compat + xdp-sockets（CONFIG_XDP_SOCKETS）
+#   - appfilter 依赖内核：kmod-fwx + kmod-ipt-conntrack(+extra) + kmod-ipt-filter
+#   - fanchmwrt 插件内核：packages-official.txt 中全部 274 个 kmod-* 直接编译进内核
 #   - 分区：efi/boot = 2G，rootfs = 2G，data = 5G（首次启动自动挂载 /data）
 #
 # 源码：fanchmwrt/fanchmwrt @ fanchmwrt-25.12.4（即 25.12.4-1.0.4 迭代）
-# 触发：Actions → Build FanchmWrt x86/64 (daed + appfilter + partitions) → Run workflow
+# 触发：Actions → Build FanchmWrt x86/64 (kernel-only + partitions) → Run workflow
+# 说明：本工作流不添加任何外部插件 feed（避免用户态包缺失导致 defconfig 剔除），
+#       仅通过内核选项与 kmod 把依赖固化进内核。
 # ============================================================
 
-name: Build FanchmWrt x86/64 (daed + appfilter + partitions)
+name: Build FanchmWrt x86/64 (kernel-only + partitions)
 
 on:
   workflow_dispatch:
@@ -54,15 +58,6 @@ jobs:
           # dwarves 提供 pahole；开启 CONFIG_KERNEL_DEBUG_INFO_BTF 必需
           command -v pahole && pahole --version
 
-      - name: Add daed feed (QiuSimons - daed daemon + luci-app-daed)
-        run: |
-          grep -q "luci-app-daed" feeds.conf.default || cat >> feeds.conf.default <<'EOF'
-
-          # --- daed (dae 透明代理) ---
-          src-git daed https://github.com/QiuSimons/luci-app-daed.git;master
-          EOF
-          tail -5 feeds.conf.default
-
       - name: Update and install feeds
         run: |
           ./scripts/feeds update -a
@@ -70,14 +65,15 @@ jobs:
 
       - name: Kernel extra config (XDP sockets for daed)
         run: |
-          # BTF 必须在顶层 .config 打开；这里只补 kmod-xdp-sockets-diag 需要的 XDP 符号
+          # BTF 必须用顶层 .config 打开；XDP sockets 是 kmod-xdp-sockets-diag 的内核依赖，
+          # 手写进 target/linux/x86/64/config-6.12 才能保住（Kconfig 不会因依赖丢弃）。
           grep -q "CONFIG_XDP_SOCKETS=y" target/linux/x86/64/config-6.12 || cat >> target/linux/x86/64/config-6.12 <<'EOF'
 
           # --- daed 依赖：XDP sockets ---
           CONFIG_XDP_SOCKETS=y
           EOF
 
-      - name: Fetch official package list (all default plugins + appfilter kernels)
+      - name: Fetch official package list (for kmod-* only)
         run: |
           for i in 1 2 3; do
             curl -sSL --max-time 60 -o packages-official.txt \
@@ -85,9 +81,9 @@ jobs:
             echo "retry $i ..."; sleep 5
           done
           echo "packages lines: $(wc -l < packages-official.txt)"
-          head -3 packages-official.txt
+          echo "kmod-* lines: $(grep -c '^CONFIG_PACKAGE_kmod-' packages-official.txt)"
 
-      - name: Generate .config
+      - name: Generate .config (kernel-only)
         run: |
           cat > .config <<'EOF'
           CONFIG_TARGET_x86=y
@@ -98,61 +94,60 @@ jobs:
           CONFIG_TARGET_KERNEL_PARTSIZE=${{ github.event.inputs.kernel_mb }}
           CONFIG_TARGET_ROOTFS_PARTSIZE=${{ github.event.inputs.rootfs_mb }}
 
-          # ---- BTF（dae CO-RE eBPF 必需）----
+          # ---- BTF（dae CO-RE eBPF 必需，后续 opkg 安装 daed 即可运行）----
           # 必须关掉 REDUCED，否则 BTF 被静默丢弃
           CONFIG_KERNEL_DEBUG_INFO=y
           # CONFIG_KERNEL_DEBUG_INFO_REDUCED is not set
           CONFIG_KERNEL_DEBUG_INFO_BTF=y
 
-          # ---- daed/dae 内核依赖（强制 =y 编译进内核）----
+          # ---- daed/dae 内核依赖（kmod 编译进内核）----
           CONFIG_PACKAGE_kmod-sched-core=y
           CONFIG_PACKAGE_kmod-sched-bpf=y
           CONFIG_PACKAGE_kmod-veth=y
-          CONFIG_PACKAGE_kmod-xdp-sockets-diag=y
           CONFIG_PACKAGE_kmod-nft-tproxy=y
           CONFIG_PACKAGE_kmod-nft-socket=y
           CONFIG_PACKAGE_kmod-nft-compat=y
-          CONFIG_PACKAGE_ca-bundle=y
+          CONFIG_PACKAGE_kmod-xdp-sockets-diag=y
 
-          # ---- daed 应用包（QiuSimons feed 提供 daemon + luci-app）----
-          CONFIG_PACKAGE_daed=y
-          CONFIG_PACKAGE_luci-app-daed=y
-          CONFIG_PACKAGE_luci-i18n-daed-zh-cn=y
-
-          # ---- appfilter（Open App Filter）内核依赖强制 =y ----
+          # ---- appfilter（Open App Filter）内核依赖编译进内核 ----
           CONFIG_PACKAGE_kmod-fwx=y
           CONFIG_PACKAGE_kmod-ipt-conntrack=y
           CONFIG_PACKAGE_kmod-ipt-conntrack-extra=y
-          CONFIG_PACKAGE_luci-app-fwx-appfilter=y
+          CONFIG_PACKAGE_kmod-ipt-filter=y
+
+          # ---- 基础 web 管理界面（base luci，非插件，便于刷机后管理）----
+          CONFIG_PACKAGE_luci=y
+          CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
           EOF
 
-          # 追加官方 25.12.4-1.0.4 底包完整集合（含全部 luci-app-fwx-* 与 fwxd）
-          cat packages-official.txt >> .config
+          # 追加 fanchmwrt 默认插件的全部 kmod-* 内核模块（供后续 opkg 安装插件）。
+          # 只包含内核模块，不编任何用户态插件包。
+          grep '^CONFIG_PACKAGE_kmod-' packages-official.txt >> .config
+
           wc -l .config
           make defconfig
 
-      - name: Verify critical options (fail fast)
+      - name: Verify critical kernel options (fail fast)
         run: |
           df -h / | tail -1
-          echo "=== 关键配置校验（必须都有 =y）==="
+          echo "=== 关键内核配置校验 ==="
           for k in CONFIG_KERNEL_DEBUG_INFO_BTF CONFIG_TARGET_x86_64 \
                    CONFIG_TARGET_ROOTFS_PARTSIZE CONFIG_TARGET_KERNEL_PARTSIZE \
                    CONFIG_PACKAGE_kmod-sched-bpf CONFIG_PACKAGE_kmod-veth \
-                   CONFIG_PACKAGE_kmod-xdp-sockets-diag CONFIG_PACKAGE_kmod-nft-tproxy \
-                   CONFIG_PACKAGE_kmod-fwx CONFIG_PACKAGE_daed CONFIG_PACKAGE_luci-app-daed \
-                   CONFIG_PACKAGE_luci-app-fwx-appfilter; do
-            printf '%-46s %s\n' "$k" "$(grep -m1 "^${k}=" .config || echo '!!! 未选中')"
+                   CONFIG_PACKAGE_kmod-xdp-sockets-diag CONFIG_PACKAGE_kmod-fwx \
+                   CONFIG_PACKAGE_kmod-ipt-conntrack CONFIG_PACKAGE_kmod-nft-tproxy; do
+            v=$(grep -m1 "^${k}=" .config || true)
+            if [ -z "$v" ]; then echo "  [warn] $k 未选中（依赖未满足，将被 opkg 按需安装）"; else echo "  $k = ${v#*=}"; fi
           done
+          # 确认 fanchmwrt 默认插件内核模块已编入（计数）
+          echo "kmod-* 已编入数量: $(grep -c '^CONFIG_PACKAGE_kmod-.*=y' .config)"
           if ! grep -q "^CONFIG_KERNEL_DEBUG_INFO_BTF=y" .config; then
             echo "!! 未启用 CONFIG_KERNEL_DEBUG_INFO_BTF —— 终止"; exit 1
           fi
           if grep -q "^CONFIG_KERNEL_DEBUG_INFO_REDUCED=y" .config; then
             echo "!! KERNEL_DEBUG_INFO_REDUCED 仍为 y，会否决 BTF —— 终止"; exit 1
           fi
-          if ! grep -q "^CONFIG_PACKAGE_daed=y" .config; then
-            echo "!! daed 未选中 —— 终止"; exit 1
-          fi
-          echo "== 配置 OK，继续编译 =="
+          echo "== 内核配置 OK，继续编译 =="
 
       - name: Embed data-partition mount script (first boot -> /data)
         run: |
@@ -189,9 +184,9 @@ jobs:
         continue-on-error: true
         run: |
           set -x
-          IMG=$(ls bin/targets/x86/64/*-ext4-combined-efi.img.gz 2>/dev/null | head -1)
+          IMG=$(ls bin/targets/x86/64/*combined-efi*.img.gz 2>/dev/null | head -1)
           if [ -z "$IMG" ]; then
-            echo "未找到 ext4-combined-efi 镜像，跳过 data 分区（基础镜像仍会上传）"
+            echo "未找到 combined-efi 镜像，跳过 data 分区（基础镜像仍会上传）"
             exit 0
           fi
           # 释放构建目录，给数据分区腾出磁盘
@@ -214,7 +209,7 @@ jobs:
       - name: Upload firmware
         uses: actions/upload-artifact@v4
         with:
-          name: fanchmwrt-25.12.4-x86-64-daed-appfilter
+          name: fanchmwrt-25.12.4-x86-64-kernel-only
           path: bin/targets/x86/64/*.img.gz
           if-no-files-found: warn
           retention-days: 30
